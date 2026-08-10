@@ -1,0 +1,7 @@
+interface:
+  display_name: "Loop Task Creator"
+  short_description: "Interview requirements and create Loop task files"
+  default_prompt: "Use $loop-task-creator to interview me about the requirements, then create a task definition under .loop/tasks."
+
+policy:
+  allow_implicit_invocation: true
