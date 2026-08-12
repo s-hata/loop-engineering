@@ -1,0 +1,20 @@
+@import 'tailwindcss';
+@config '../../../tailwind.config.ts';
+
+@layer base {
+  :root {
+    --border: 214 32% 91%;
+    --foreground: 222 47% 11%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 210 40% 98%;
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-white text-foreground antialiased;
+  }
+}
