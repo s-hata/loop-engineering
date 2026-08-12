@@ -11,7 +11,7 @@ LOOP_HELPERS := $(wildcard loop/*.bash)
 LOOP_TESTS := $(wildcard loop/*.bats)
 
 .PHONY: help sh-test sh-lint sh-fmt sh-fmt-check \
-	check-deps sh-check-dev-deps task-add task-status task-run task-resume task-reset \
+	check-deps sh-check-dev-deps task-add task-status task-run task-resume task-publish task-reset \
 	task-reset-force sh-check
 
 help:
@@ -34,12 +34,13 @@ help:
 		'  task-status        Show task queue status' \
 		'  task-run           Run the next queued task' \
 		'  task-resume        Resume a task without discarding its worktree' \
+		'  task-publish       Push a committed task and create its pull request' \
 		'  task-reset         Reset a task for rerun (TASK_ID=n)' \
 		'  task-reset-force   Reset and discard worktree changes (TASK_ID=n)'
 
 check-deps:
 	@missing=0; \
-	for command_name in git codex sqlite3 jq bash; do \
+	for command_name in git codex gh sqlite3 jq bash; do \
 		if command -v "$$command_name" >/dev/null 2>&1; then \
 			echo "[ok]      $$command_name"; \
 		else \
@@ -101,6 +102,16 @@ task-resume: check-deps
 		*[!0-9]*) echo 'TASK_ID must be a number' >&2; exit 2 ;; \
 	esac
 	./loop/loop.sh resume "$(TASK_ID)"
+
+task-publish: check-deps
+	@if [ -z "$(TASK_ID)" ]; then \
+		echo 'Usage: make task-publish TASK_ID=<number>' >&2; \
+		exit 2; \
+	fi; \
+	case "$(TASK_ID)" in \
+		*[!0-9]*) echo 'TASK_ID must be a number' >&2; exit 2 ;; \
+	esac
+	./loop/loop.sh publish "$(TASK_ID)"
 
 task-reset:
 	@if [ -z "$(TASK_ID)" ]; then \

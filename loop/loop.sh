@@ -69,6 +69,9 @@ Usage:
   loop/loop.sh resume \
     "task-id"
 
+  loop/loop.sh publish \
+    "task-id"
+
   loop/loop.sh status
 EOF
 }
@@ -213,10 +216,178 @@ The external orchestrator will return the test command.
 EOF
 }
 
+build_pr_body() {
+  local worktree="${1}"
+  local task_id="${2}"
+  local title="${3}"
+  local commit="${4}"
+  local task_content="${5}"
+  local test_command="${6}"
+
+  local template="${worktree}/.github/PULL_REQUEST_TEMPLATE.md"
+  local body
+  local summary
+  local changes
+  local test_status
+  local verifier_status
+  local manual_verification
+  local risk
+  local reviewer_notes
+
+  if [[ -f "${template}" ]]; then
+    body="$(<"${template}")"
+  else
+    body=$'## Summary\n\n<!-- PR_SUMMARY -->\n\n## Related task\n\n- Loop task: <!-- PR_TASK_ID -->\n\n## Changes\n\n<!-- PR_CHANGES -->\n\n## Verification\n\n- Test gate: <!-- PR_TEST_STATUS --> (`<!-- PR_TEST_COMMAND -->`)\n- Verifier Codex: <!-- PR_VERIFIER_STATUS -->\n\n## Risk and rollback\n\n<!-- PR_RISK -->\n\n## Reviewer notes\n\n<!-- PR_REVIEWER_NOTES -->\n\n## Checklist\n\n- [ ] Acceptance criteria are satisfied\n- [ ] Tests were added or updated where appropriate\n- [ ] Verification results are recorded above\n- [ ] Unrelated changes are not included\n- [ ] Documentation impact was considered'
+  fi
+
+  summary="${task_content:-${title}}"
+  changes="Implemented the requested changes for Loop task #${task_id}."
+  test_status="passed"
+  verifier_status="passed"
+  test_command="${test_command:-not configured}"
+  manual_verification="not performed"
+  risk="No additional risks were identified by the automated verification."
+  reviewer_notes="Please review the acceptance criteria and the changed files."
+
+  body="${body//<!-- PR_SUMMARY -->/${summary}}"
+  body="${body//<!-- PR_TASK_ID -->/#${task_id}}"
+  body="${body//<!-- PR_RELATED_ISSUE -->/not specified}"
+  body="${body//<!-- PR_CHANGES -->/${changes}}"
+  body="${body//<!-- PR_TEST_STATUS -->/${test_status}}"
+  body="${body//<!-- PR_TEST_COMMAND -->/${test_command}}"
+  body="${body//<!-- PR_VERIFIER_STATUS -->/${verifier_status}}"
+  body="${body//<!-- PR_MANUAL_VERIFICATION -->/${manual_verification}}"
+  body="${body//<!-- PR_RISK -->/${risk}}"
+  body="${body//<!-- PR_REVIEWER_NOTES -->/${reviewer_notes}}"
+
+  printf '%s\n\nCommit: %s%s%s\n' "${body}" '`' "${commit}" '`'
+}
+
+publish_task() {
+  local worktree="${1}"
+  local branch="${2}"
+  local base_branch="${3}"
+  local title="${4}"
+  local task_id="${5}"
+  local commit="${6}"
+  local task_content="${7}"
+  local test_command="${8}"
+  local log_file="${9}"
+
+  local pr_url
+  local body_file
+
+  : >"${log_file}"
+
+  (
+    cd "${worktree}"
+
+    if ! git push \
+      --set-upstream \
+      origin \
+      "${branch}" \
+      >>"${log_file}" \
+      2>&1; then
+      return 1
+    fi
+
+    if pr_url="$(gh pr view \
+      "${branch}" \
+      --json url \
+      --jq '.url' \
+      2>>"${log_file}")" && [[ -n "${pr_url}" ]]; then
+      printf '%s\n' "${pr_url}"
+      return 0
+    fi
+
+    body_file="$(mktemp "${TMPDIR:-/tmp}/loop-pr-body.XXXXXX")"
+    build_pr_body \
+      "${worktree}" \
+      "${task_id}" \
+      "${title}" \
+      "${commit}" \
+      "${task_content}" \
+      "${test_command}" >"${body_file}"
+
+    if ! pr_url="$(gh pr create \
+      --base "${base_branch}" \
+      --head "${branch}" \
+      --title "${title}" \
+      --body-file "${body_file}" \
+      2>>"${log_file}")"; then
+      rm -f -- "${body_file}"
+      return 1
+    fi
+
+    rm -f -- "${body_file}"
+
+    if [[ -z "${pr_url}" ]]; then
+      echo "gh pr create returned no pull request URL." >>"${log_file}"
+      return 1
+    fi
+
+    printf '%s\n' "${pr_url}"
+  )
+}
+
+publish_committed_task() {
+  local task_id="${1}"
+  local attempt="${2}"
+  local worktree="${3}"
+  local base_branch="${4}"
+  local title="${5}"
+  local commit="${6}"
+  local task_content="${7}"
+  local test_command="${8}"
+
+  local branch
+  local publish_log
+  local pr_url
+  local publish_error
+
+  branch="$(git -C "${worktree}" branch --show-current)"
+  publish_log="${LOG_ROOT}/task-${task_id}-attempt-${attempt}-publish.log"
+
+  if ! pr_url="$(publish_task \
+    "${worktree}" \
+    "${branch}" \
+    "${base_branch}" \
+    "${title}" \
+    "${task_id}" \
+    "${commit}" \
+    "${task_content}" \
+    "${test_command}" \
+    "${publish_log}")"; then
+    publish_error="$(cat "${publish_log}" 2>/dev/null || true)"
+    if [[ -z "${publish_error}" ]]; then
+      publish_error="Unknown push or pull request creation error."
+    fi
+
+    task_set_error \
+      "${task_id}" \
+      "Failed to publish branch ${branch}: ${publish_error}"
+    export_json
+    echo "Failed to publish branch ${branch}: ${publish_error}" >&2
+    return 1
+  fi
+
+  task_complete \
+    "${task_id}" \
+    "${commit}" \
+    "${pr_url}"
+
+  echo "PUBLISHED: ${branch}"
+  echo "PULL REQUEST: ${pr_url}"
+}
+
 commit_task() {
   local task_id="${1}"
   local worktree="${2}"
   local title="${3}"
+  local base_branch="${4}"
+  local attempt="${5}"
+  local task_content="${6}"
+  local test_command="${7}"
 
   (
     cd "${worktree}"
@@ -241,10 +412,18 @@ commit_task() {
 
     local commit
     commit="$(git rev-parse HEAD)"
+    task_set_result_commit "${task_id}" "${commit}"
+    export_json
 
-    task_complete \
+    publish_committed_task \
       "${task_id}" \
-      "${commit}"
+      "${attempt}" \
+      "${worktree}" \
+      "${base_branch}" \
+      "${title}" \
+      "${commit}" \
+      "${task_content}" \
+      "${test_command}"
   )
 }
 
@@ -383,6 +562,22 @@ resume_task_phase() {
 
   local resume_attempt=$((attempt + 1))
 
+  local existing_commit
+  existing_commit="$(task_result_commit "${task_id}")"
+  if [[ -n "${existing_commit}" ]]; then
+    task_increment_attempt "${task_id}"
+    publish_committed_task \
+      "${task_id}" \
+      "${resume_attempt}" \
+      "${worktree}" \
+      "${base_branch}" \
+      "${title}" \
+      "${existing_commit}" \
+      "${prompt}" \
+      "${test_command}"
+    return $?
+  fi
+
   if [[ "${phase}" == "test" && -z "${last_error}" ]]; then
     task_increment_attempt "${task_id}"
     run_gate_and_verify \
@@ -392,7 +587,14 @@ resume_task_phase() {
       "${base_branch}" \
       "${prompt}" \
       "${test_command}" || return 1
-    commit_task "${task_id}" "${worktree}" "${title}"
+    commit_task \
+      "${task_id}" \
+      "${worktree}" \
+      "${title}" \
+      "${base_branch}" \
+      "${resume_attempt}" \
+      "${prompt}" \
+      "${test_command}"
     return $?
   fi
 
@@ -405,7 +607,14 @@ resume_task_phase() {
       "${base_branch}" \
       "${prompt}" \
       "${test_command}" || return 1
-    commit_task "${task_id}" "${worktree}" "${title}"
+    commit_task \
+      "${task_id}" \
+      "${worktree}" \
+      "${title}" \
+      "${base_branch}" \
+      "${resume_attempt}" \
+      "${prompt}" \
+      "${test_command}"
     return $?
   fi
 
@@ -433,7 +642,14 @@ resume_task_phase() {
     "${base_branch}" \
     "${prompt}" \
     "${test_command}"; then
-    commit_task "${task_id}" "${worktree}" "${title}"
+    commit_task \
+      "${task_id}" \
+      "${worktree}" \
+      "${title}" \
+      "${base_branch}" \
+      "${resume_attempt}" \
+      "${prompt}" \
+      "${test_command}"
     return $?
   fi
 
@@ -694,36 +910,15 @@ process_task() {
         continue
       fi
 
-      # COMMIT OUTSIDE CODEX
-      (
-        cd "${worktree}"
-
-        git add -A
-
-        if git diff \
-          --cached \
-          --quiet; then
-          echo "No changes produced."
-          task_set_error \
-            "${task_id}" \
-            "Test passed but no repository changes were produced."
-
-          task_fail "${task_id}"
-          export_json
-
-          return 1
-        fi
-
-        git commit \
-          -m "agent: task ${task_id} - ${title}"
-
-        local commit
-        commit="$(git rev-parse HEAD)"
-
-        task_complete \
-          "${task_id}" \
-          "${commit}"
-      )
+      # COMMIT, PUSH, AND CREATE PR OUTSIDE CODEX
+      commit_task \
+        "${task_id}" \
+        "${worktree}" \
+        "${title}" \
+        "${base_branch}" \
+        "${attempt}" \
+        "${prompt}" \
+        "${test_command}"
 
       export_json
 
@@ -814,6 +1009,101 @@ resume_task() {
   esac
 }
 
+publish_task_command() {
+  local task_id="${1:-}"
+  local task_json
+  local status
+  local worktree
+  local branch
+  local base_branch
+  local title
+  local commit
+  local pr_url
+  local definition_path
+  local definition_file
+  local task_content
+  local test_command
+
+  if [[ -z "${task_id}" || ! "${task_id}" =~ ^[0-9]+$ ]]; then
+    echo "Usage: loop/loop.sh publish <task-id>" >&2
+    return 2
+  fi
+
+  task_json="$(task_get "${task_id}")"
+  if [[ "${task_json}" == "[]" ]]; then
+    echo "Task #${task_id} not found" >&2
+    return 1
+  fi
+
+  status="$(jq -r '.[0].status' <<<"${task_json}")"
+  pr_url="$(jq -r '.[0].pr_url // empty' <<<"${task_json}")"
+  if [[ "${status}" == "completed" && -n "${pr_url}" ]]; then
+    echo "Task #${task_id} is already completed: ${pr_url}" >&2
+    return 1
+  fi
+
+  worktree="$(jq -r '.[0].worktree // empty' <<<"${task_json}")"
+  branch="$(jq -r '.[0].branch // empty' <<<"${task_json}")"
+  base_branch="$(jq -r '.[0].base_branch // "main"' <<<"${task_json}")"
+  title="$(jq -r '.[0].title // empty' <<<"${task_json}")"
+  commit="$(jq -r '.[0].result_commit // empty' <<<"${task_json}")"
+  definition_path="$(jq -r '.[0].definition_path // empty' <<<"${task_json}")"
+  task_content="$(jq -r '.[0].prompt // empty' <<<"${task_json}")"
+  test_command="$(jq -r '.[0].test_command // empty' <<<"${task_json}")"
+
+  if [[ -n "${definition_path}" ]]; then
+    definition_file="$(task_definition_file "${definition_path}")"
+    if [[ ! -f "${definition_file}" ]]; then
+      echo "Task definition not found: ${definition_file}" >&2
+      return 1
+    fi
+
+    title="$(task_definition_field "${definition_file}" title)"
+    task_content="$(task_definition_body "${definition_file}")"
+    test_command="$(task_definition_field "${definition_file}" test_command)"
+    base_branch="$(task_definition_field "${definition_file}" base_branch)"
+    base_branch="${base_branch:-main}"
+  fi
+
+  if [[ -z "${worktree}" || ! -d "${worktree}" ]]; then
+    echo "Task #${task_id} worktree not found: ${worktree:-<none>}" >&2
+    return 1
+  fi
+  if [[ -z "${branch}" ]]; then
+    branch="$(git -C "${worktree}" branch --show-current)"
+  fi
+  if [[ -z "${branch}" ]]; then
+    echo "Task #${task_id} has no branch" >&2
+    return 1
+  fi
+  if [[ "$(git -C "${worktree}" branch --show-current)" != "${branch}" ]]; then
+    echo "Task #${task_id} worktree branch does not match the recorded branch" >&2
+    return 1
+  fi
+  if [[ -z "${commit}" ]]; then
+    echo "Task #${task_id} has no committed result to publish" >&2
+    return 1
+  fi
+  if ! git -C "${worktree}" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+    echo "Task #${task_id} result commit not found: ${commit}" >&2
+    return 1
+  fi
+  if [[ -n "$(git -C "${worktree}" status --short)" ]]; then
+    echo "Task #${task_id} worktree has uncommitted changes; refusing to publish" >&2
+    return 1
+  fi
+
+  publish_committed_task \
+    "${task_id}" \
+    "$(jq -r '.[0].attempt // 0' <<<"${task_json}")" \
+    "${worktree}" \
+    "${base_branch}" \
+    "${title}" \
+    "${commit}" \
+    "${task_content}" \
+    "${test_command}"
+}
+
 status() {
   local task_count
   task_count="$(sqlite3 -noheader -batch "${DB}" "SELECT COUNT(*) FROM tasks;")"
@@ -885,6 +1175,12 @@ main() {
       db_init
       acquire_run_lock
       resume_task "${2:-}"
+      ;;
+
+    publish)
+      db_init
+      acquire_run_lock
+      publish_task_command "${2:-}"
       ;;
 
     status)

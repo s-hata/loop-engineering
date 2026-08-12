@@ -7,11 +7,14 @@ setup_fixture() {
   export FIXTURE_ROOT
 
   cp -R "${PROJECT_ROOT}/loop" "${FIXTURE_ROOT}/loop"
+  cp -R "${PROJECT_ROOT}/.github" "${FIXTURE_ROOT}/.github"
+  cp "${PROJECT_ROOT}/AGENTS.md" "${FIXTURE_ROOT}/AGENTS.md"
+  cp "${PROJECT_ROOT}/Makefile" "${FIXTURE_ROOT}/Makefile"
 
   git -C "${FIXTURE_ROOT}" init -q -b main
   git -C "${FIXTURE_ROOT}" config user.email "loop-bats@example.invalid"
   git -C "${FIXTURE_ROOT}" config user.name "loop-bats"
-  git -C "${FIXTURE_ROOT}" add loop
+  git -C "${FIXTURE_ROOT}" add loop .github AGENTS.md Makefile
   git -C "${FIXTURE_ROOT}" commit -qm "fixture"
 
   cd "${FIXTURE_ROOT}" || return 1

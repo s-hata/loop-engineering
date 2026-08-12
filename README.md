@@ -82,7 +82,7 @@ Codexの内側ループと、タスク状態・worktree・再試行を管理す�
   └─────────────────────────────────────────────┘
 ```
 
-内側ループは、Codexが同じworktreeで実装・テスト・観察・修正を繰り返すサイクルである。外側ループは、タスク定義ファイルとSQLiteに保存した実行状態・attemptを使い、テストゲートまたはVerifier Codexの失敗内容を次のrepairへ渡す。`max_attempts`に達したら`failed`で停止し、テストゲートとVerifier Codexの両方を通過した場合だけcommitして`completed`に遷移する。
+内側ループは、Codexが同じworktreeで実装・テスト・観察・修正を繰り返すサイクルである。外側ループは、タスク定義ファイルとSQLiteに保存した実行状態・attemptを使い、テストゲートまたはVerifier Codexの失敗内容を次のrepairへ渡す。`max_attempts`に達したら`failed`で停止し、テストゲートとVerifier Codexの両方を通過した場合だけcommit、`origin`へのpush、GitHubのPull Request作成を行ってから`completed`に遷移する。
 
 ### Test gateとVerifier Codex
 
@@ -100,6 +100,7 @@ Test gateは「要求された動作が実際に動くか」を、Verifier Codex
 - goal: `.loop/state.db`のqueuedタスク
 - task definition: `.loop/tasks/*.md`
 - verification: タスク定義内の任意のtest commandによるテストゲートと、受け入れ条件・変更差分を読むVerifier Codex
+- publishing: `git push origin <agent-branch>`と`gh pr create`によるPull Request作成
 - stopping rule: `max_attempts`到達またはcompleted
 - memory: SQLiteの実行状態、タスク定義ファイル、ログ、worktree
 
@@ -142,11 +143,14 @@ make task-reset TASK_ID=1       # 再実行前にタスク状態をリセット
 make task-reset-force TASK_ID=1 # 変更を破棄して強制リセット
 make task-run                   # キュー先頭のタスクを実行
 make sh-check         # 依存確認、lint、format確認、テストをまとめて実行
+make task-publish TASK_ID=1     # 指定タスクのコミットをpushしてPull Requestを作成
 ```
 
-実行時依存は`git`、`codex`、`sqlite3`、`jq`、`bash`とする。開発時の依存は`bats`、`shellcheck`、`shfmt`とする。依存チェックは各コマンドの存在を確認し、不足しているものを一覧表示して失敗させる。
+実行時依存は`git`、`codex`、`gh`、`sqlite3`、`jq`、`bash`とする。`gh auth login`によるGitHub CLIの認証と、`origin`へのpush権限が必要である。開発時の依存は`bats`、`shellcheck`、`shfmt`とする。依存チェックは各コマンドの存在を確認し、不足しているものを一覧表示して失敗させる。
 
 Batsテストは実リポジトリの`.loop/`を直接変更せず、一時Gitリポジトリと一時ディレクトリを使って実行する。
+
+E2Eテストでは、commit後のpushとGitHub CLIによるPull Request作成もスタブを使って検証する。
 
 `loop/loop_e2e.bats`では、Codexをスタブに差し替えたうえで、タスク取得からworktree作成、attempt記録、テストゲート、read-only Verifier Codex、完了状態までの`loop/loop.sh run`をE2Eで検証する。Verifierの結果はJSONLログと最終メッセージに保存し、PASS以外はコミットせず修正試行へ戻す。
 

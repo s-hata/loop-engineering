@@ -27,6 +27,10 @@ db_init() {
     sqlite3 "${DB}" "ALTER TABLE tasks ADD COLUMN attempt_limit INTEGER NOT NULL DEFAULT 0;"
   fi
 
+  if ! sqlite3 "${DB}" "SELECT pr_url FROM tasks LIMIT 0;" >/dev/null 2>&1; then
+    sqlite3 "${DB}" "ALTER TABLE tasks ADD COLUMN pr_url TEXT;"
+  fi
+
   task_backfill_attempt_limits
 }
 
@@ -345,15 +349,42 @@ task_set_error() {
   "
 }
 
+task_set_result_commit() {
+  local id="${1}"
+  local commit="${2}"
+
+  commit="$(sql_escape "${commit}")"
+
+  sqlite3 "${DB}" "
+    UPDATE tasks
+    SET
+      result_commit = '${commit}',
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ${id};
+  "
+}
+
+task_result_commit() {
+  local id="${1}"
+
+  sqlite3 -noheader -batch "${DB}" \
+    "SELECT COALESCE(result_commit, '') FROM tasks WHERE id = ${id};"
+}
+
 task_complete() {
   local id="${1}"
   local commit="${2}"
+  local pr_url="${3}"
+
+  commit="$(sql_escape "${commit}")"
+  pr_url="$(sql_escape "${pr_url}")"
 
   sqlite3 "${DB}" "
     UPDATE tasks
     SET
       status = 'completed',
-      result_commit = '$commit',
+      result_commit = '${commit}',
+      pr_url = '${pr_url}',
       finished_at = CURRENT_TIMESTAMP,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = $id;
@@ -413,6 +444,7 @@ export_json() {
       attempt_limit,
       last_error,
       result_commit,
+      pr_url,
       created_at,
       started_at,
       finished_at,

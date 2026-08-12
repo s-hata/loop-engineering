@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   attempt_limit INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   result_commit TEXT,
+  pr_url TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   started_at TEXT,
   finished_at TEXT,
