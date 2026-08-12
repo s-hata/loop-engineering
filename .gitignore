@@ -1,0 +1,4 @@
+.loop/worktrees/
+.loop/logs/*
+.loop/state.db*
+.loop/state.json
